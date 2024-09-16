@@ -49,10 +49,10 @@ param spnTenantId string
 param subscriptionId string = subscription().subscriptionId
 
 @description('Target GitHub account')
-param githubAccount string = 'microsoft'
+param githubAccount string = 'mrhoads'
 
 @description('Target GitHub branch')
-param githubBranch string = 'main'
+param githubBranch string = 'aio-mfg-20240916'
 
 @description('Name of the VNET')
 param virtualNetworkName string = 'AIO-Demo-VNET'
