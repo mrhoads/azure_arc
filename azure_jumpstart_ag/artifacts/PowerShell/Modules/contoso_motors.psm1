@@ -13,7 +13,7 @@ function Get-K3sConfigFileContosoMotors {
     }
 }
 
-function Merge-K3sConfigFiles {
+function Merge-K3sConfigFilesContosoMotors {
 
     $mergedKubeconfigPath = "C:\Users\$adminUsername\.kube\config"
 
@@ -89,7 +89,7 @@ function Merge-K3sConfigFiles {
 
 }
 
-function Set-K3sClusters {
+function Set-K3sClustersContosoMotors {
     Write-Host "Configuring kube-vip on K3s clusters"
     #az login --service-principal --username $Env:spnClientID --password=$Env:spnClientSecret --tenant $Env:spnTenantId
     az login --identity
