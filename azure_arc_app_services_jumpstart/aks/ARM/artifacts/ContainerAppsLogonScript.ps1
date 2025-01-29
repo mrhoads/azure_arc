@@ -76,7 +76,7 @@ Start-Sleep -Seconds 10
 # Create Kubernetes - Azure Arc Cluster
 az connectedk8s connect --name $Env:connectedClusterName `
                         --resource-group $Env:resourceGroup `
-                        --location $Env:azureLocation `
+                        --location westeurope `
                         --tags "jumpstart_azure_arc_app_services" `
                         --kube-config $Env:KUBECONFIG `
                         --kube-context $Env:KUBECONTEXT `
