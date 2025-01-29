@@ -158,7 +158,6 @@
                         "enabled": true
                     }
       }
-    }
   ],
   "outputs": {
     "controlPlaneFQDN": {
