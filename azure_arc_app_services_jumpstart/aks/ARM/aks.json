@@ -146,17 +146,7 @@
         "servicePrincipalProfile": {
           "clientId": "[parameters('spnClientId')]",
           "Secret": "[parameters('spnClientSecret')]"
-        },
-        "storageProfile": {
-                    "diskCSIDriver": {
-                        "enabled": true
-                    },
-                    "fileCSIDriver": {
-                        "enabled": true
-                    },
-                    "snapshotController": {
-                        "enabled": true
-                    }
+        }
       }
   ],
   "outputs": {
