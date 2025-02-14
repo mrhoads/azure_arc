@@ -284,14 +284,6 @@ module keyVault 'data/keyVault.bicep' = {
   }
 }
 
-module acr 'kubernetes/acr.bicep' = {
-  name: 'acrDeployment'
-  params: {
-    acrName: acrName
-    location: location
-  }
-}
-
 module adx 'data/dataExplorer.bicep' = {
   name: 'adxDeployment'
   params: {
