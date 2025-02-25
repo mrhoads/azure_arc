@@ -81,8 +81,10 @@ sudo chmod +x /usr/local/bin/azcopy
 
 # Authorize azcopy by using a system-wide managed identity
 export AZCOPY_AUTO_LOGIN_TYPE=MSI
-d devthe lock check before attempting the installation
+
+# Run the lock check before attempting the installation
 check_dpkg_lock
+
 
 # Installing Azure CLI & Azure Arc extensions
 max_retries=5
