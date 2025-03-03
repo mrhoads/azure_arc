@@ -111,12 +111,16 @@ function Set-K3sClusters {
             Write-Host "Deploying Kube vip cloud controller on k3s cluster"
             kubectl apply -f https://raw.githubusercontent.com/kube-vip/kube-vip-cloud-provider/main/manifest/kube-vip-cloud-controller.yaml
 
-            $serviceIpRange = $(az network nic ip-config list --resource-group $Env:resourceGroup --nic-name $vmName-NIC --query "[?primary == ``false``].privateIPAddress" -otsv)
-            $sortedIps = $serviceIpRange | Sort-Object { [System.Version]$_ }
-            $lowestServiceIp = $sortedIps[0]
-            $highestServiceIp = $sortedIps[-1]
+            while ($kubeVipPrivateIP -eq $null) {
+                Write-Host "Waiting for kube-vip to assign a private IP address"
+                $kubeVipPrivateIP = $(az network nic ip-config list --resource-group $Env:resourceGroup --nic-name $vmName-NIC --query "[?primary == ``true``].privateIPAddress" -otsv)
+                if ($kubeVipPrivateIP -eq $null) {
+                    Write-Host "kubeVipPrivateIP is null; retrying..."
+                    Start-Sleep -Seconds 5
+                }
+            }
 
-            kubectl create configmap -n kube-system kubevip --from-literal range-global=$lowestServiceIp-$highestServiceIp
+            kubectl create configmap -n kube-system kubevip --from-literal cidr-global=$kubeVipPrivateIP/32
             Start-Sleep -Seconds 30
 
             # Write-Host "Creating longhorn storage on K3scluster"
