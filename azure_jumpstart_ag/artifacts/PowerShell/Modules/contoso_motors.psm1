@@ -100,7 +100,7 @@ function Set-K3sClustersContosoMotors {
             $vmName = $cluster.Value.ArcClusterName + "-$namingGuid"
             kubectx $clusterName
             $k3sVIP = $(az network nic ip-config list --resource-group $Env:resourceGroup --nic-name $vmName-NIC --query "[?primary == ``true``].privateIPAddress" -otsv)
-            Write-Host "Assigning kube-vip-role on k3s cluster"
+            Write-Host "Assigning kube-vip-role on k3s cluster $clusterName"
             $kubeVipRbac = "$($Agconfig.AgDirectories.AgToolsDir)\kubeVipRbac.yml"
             kubectl apply -f $kubeVipRbac
 
@@ -112,13 +112,16 @@ function Set-K3sClustersContosoMotors {
             kubectl apply -f https://raw.githubusercontent.com/kube-vip/kube-vip-cloud-provider/main/manifest/kube-vip-cloud-controller.yaml
 
             while ($kubeVipPrivateIP -eq $null) {
-                Write-Host "Waiting for kube-vip to assign a private IP address"
+                Write-Host "Waiting for kube-vip to assign a private IP address from $vmName-NIC"
                 $kubeVipPrivateIP = $(az network nic ip-config list --resource-group $Env:resourceGroup --nic-name $vmName-NIC --query "[?primary == ``true``].privateIPAddress" -otsv)
                 if ($kubeVipPrivateIP -eq $null) {
                     Write-Host "kubeVipPrivateIP is null; retrying..."
                     Start-Sleep -Seconds 5
                 }
             }
+            
+            #debug output
+            Write-Host "About to create kubevip configmap using $kubeVipPrivateIP"
 
             kubectl create configmap -n kube-system kubevip --from-literal cidr-global=$kubeVipPrivateIP/32
             Start-Sleep -Seconds 30
