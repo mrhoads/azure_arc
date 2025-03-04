@@ -91,7 +91,6 @@ function Merge-K3sConfigFilesContosoMotors{
 
 function Set-K3sClustersContosoMotors {
     Write-Host "Configuring kube-vip on K3s clusters"
-    #az login --service-principal --username $Env:spnClientID --password=$Env:spnClientSecret --tenant $Env:spnTenantId
     az login --identity
     az account set -s $subscriptionId
     foreach ($cluster in $AgConfig.SiteConfig.GetEnumerator()) {
@@ -111,6 +110,7 @@ function Set-K3sClustersContosoMotors {
             Write-Host "Deploying Kube vip cloud controller on k3s cluster"
             kubectl apply -f https://raw.githubusercontent.com/kube-vip/kube-vip-cloud-provider/main/manifest/kube-vip-cloud-controller.yaml
 
+            # Wait for kube-vip to assign a private IP address
             while ($kubeVipPrivateIP -eq $null) {
                 Write-Host "Waiting for kube-vip to assign a private IP address from $vmName-NIC"
                 $kubeVipPrivateIP = $(az network nic ip-config list --resource-group $Env:resourceGroup --nic-name $vmName-NIC --query "[?primary == ``true``].privateIPAddress" -otsv)
@@ -123,13 +123,13 @@ function Set-K3sClustersContosoMotors {
             #debug output
             Write-Host "About to create kubevip configmap using $kubeVipPrivateIP"
 
+
             kubectl create configmap -n kube-system kubevip --from-literal cidr-global=$kubeVipPrivateIP/32
             Start-Sleep -Seconds 30
 
             # Write-Host "Creating longhorn storage on K3scluster"
             # kubectl apply -f "$($Agconfig.AgDirectories.AgToolsDir)\longhorn.yaml"
             # Start-Sleep -Seconds 30
-            # Write-Host "`n"
         }
     }
 }

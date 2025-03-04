@@ -181,6 +181,12 @@ if($scenario -eq "contoso_hypermarket"){
     Set-K3sClusters
 }
 
+if($scenario -eq "contoso_hypermarket"){
+    Get-K3sConfigFile
+    Merge-K3sConfigFiles
+    Set-K3sClusters
+}
+
 #####################################################################
 # Creating Kubernetes namespaces on clusters
 #####################################################################
