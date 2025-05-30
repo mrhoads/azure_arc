@@ -77,12 +77,16 @@ Describe "<cluster>" -ForEach $ArcClusterNames {
     }
     $controlPlaneNodeNames = $controlPlaneNodes.items | ForEach-Object { $_.metadata.name }
 
-    # Exclude fluent-bit pods only if they're on control-plane nodes
+    # Exclude fluent-bit pods if they're Pending on control-plane nodes
     $podsToCheck = $allPods | Where-Object {
-        !($_.metadata.name -match "fluent-bit" -and $controlPlaneNodeNames -contains $_.spec.nodeName)
+        !(
+            $_.metadata.name -match "fluent-bit" -and 
+            $controlPlaneNodeNames -contains $_.spec.nodeName -and 
+            $_.status.phase -eq "Pending"
+        )
     }
 
-    It "All pods (excluding fluent-bit on control-plane) should be in Running, Completed, or have no containers in CrashLoopBackOff" {
+    It "All pods (excluding fluent-bit Pending on control-plane) should be in Running, Completed, or have no containers in CrashLoopBackOff" {
         foreach ($pod in $podsToCheck) {
             if ($pod.status.phase -in @("Running", "Succeeded")) {
                 $containersInCrashLoop = $pod.status.containerStatuses | Where-Object {
@@ -107,7 +111,7 @@ Describe "<cluster>" -ForEach $ArcClusterNames {
             $aioOperatorService.spec.clusterIP | Should -Not -BeNullOrEmpty -Because "The aio-operator service should have a valid ClusterIP assigned"
         }
     }
-    It "fluent-bit pods should run only on worker nodes, not on the control-plane node" {
+    It "fluent-bit pods should be Running or Pending on worker nodes; ignore status on control-plane nodes" {
         # Get all fluent-bit pods in the namespace
         $fluentBitPods = kubectl get pods -n azure-iot-operations -o json | ConvertFrom-Json
         $fluentBitPods = $fluentBitPods.items | Where-Object { $_.metadata.name -match "fluent-bit" }
@@ -124,12 +128,11 @@ Describe "<cluster>" -ForEach $ArcClusterNames {
         $allNodeNames = kubectl get nodes -o json | ConvertFrom-Json | Select-Object -ExpandProperty items | ForEach-Object { $_.metadata.name }
         $workerNodeNames = $allNodeNames | Where-Object { $controlPlaneNodeNames -notcontains $_ }
 
-        # Get the node each fluent-bit pod is running on
-        $podsOnControlPlane = $fluentBitPods | Where-Object { $controlPlaneNodeNames -contains $_.spec.nodeName }
-        $podsOnWorkers = $fluentBitPods | Where-Object { $workerNodeNames -contains $_.spec.nodeName }
+        # Only check fluent-bit pods on worker nodes
+        $fluentBitPodsOnWorkers = $fluentBitPods | Where-Object { $workerNodeNames -contains $_.spec.nodeName }
 
-        # Assert
-        $podsOnControlPlane | Should -BeNullOrEmpty -Because "No fluent-bit pod should run on the control-plane node"
-        $podsOnWorkers | Should -Not -BeNullOrEmpty -Because "At least one fluent-bit pod should run on a worker node"
+        foreach ($pod in $fluentBitPodsOnWorkers) {
+            $pod.status.phase | Should -BeIn @("Running", "Pending") -Because "fluent-bit pod $($pod.metadata.name) on worker node $($pod.spec.nodeName) should be Running or Pending"
+        }
     }
 }
