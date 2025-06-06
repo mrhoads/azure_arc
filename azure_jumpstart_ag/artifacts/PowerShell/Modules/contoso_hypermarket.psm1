@@ -205,7 +205,7 @@ function Deploy-AIO-M3 {
                 --query id -o tsv)
 
         Write-Host "[$(Get-Date -Format t)] INFO: The aio storage account name is: $aioStorageAccountName" -ForegroundColor DarkGray
-        Write-Host "[$(Get-Date -Format t)] INFO: the schemaId is '$schemaId' - verify this" -ForegroundColor DarkGray
+        Write-Host "[$(Get-Date -Format t)] INFO: the schemaId is '$schemaId'" -ForegroundColor DarkGray
 
         $customLocationName = $arcClusterName.toLower() + "-cl"
 
@@ -418,7 +418,7 @@ function Set-MicrosoftFabric {
 function Deploy-HypermarketConfigs {
     # Loop through the clusters and deploy the configs in AppConfig hashtable in AgConfig-contoso-hypermarket.psd
     Write-Host "INFO: Cloning the GitHub repository locally to get helm chart" -ForegroundColor Gray
-    git clone "https://github.com/Azure/jumpstart-apps.git"
+    git clone --branch contoso-hypermarket-fix-rtsp --single-branch "https://github.com/mrhoads/jumpstart-apps.git"
 
     foreach ($cluster in $AgConfig.SiteConfig.GetEnumerator()) {
         $clusterName = $cluster.Name.ToLower()
