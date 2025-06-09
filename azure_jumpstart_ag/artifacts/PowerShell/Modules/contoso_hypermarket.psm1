@@ -161,173 +161,184 @@ function Deploy-AIO-M3 {
     }
 
     $kvIndex = 0
+    $jobs = @()
     foreach ($cluster in $AgConfig.SiteConfig.GetEnumerator()) {
         $clusterName = $cluster.Name.ToLower()
-        Write-Host "[$(Get-Date -Format t)] INFO: Deploying AIO to the $clusterName cluster" -ForegroundColor Gray
-        Write-Host "`n"
-        # Create user-assigned identity for AIO secrets management
-        Write-Host "Create user-assigned identity for AIO secrets management" -ForegroundColor DarkGray
-        Write-Host "`n"
-        $userAssignedManagedIdentityKvName = "aio-${clusterName}-${namingGuid}-kv-identity"
-        $userAssignedMIKvResourceId = $(az identity create -g $resourceGroup -n $userAssignedManagedIdentityKvName -o tsv --query id)
+        $job = Start-Job -ScriptBlock {
+            param($clusterName, $AgConfig, $namingGuid, $resourceGroup, $templateBaseUrl, $dataflowBicepTemplatePath, $eventHubNamespace, $eventHubNamespaceId, $evenHubNamespaceHost, $eventHubName, $customLocationRPOID, $subscriptionId, $kvIndex)
 
-        # Create user-assigned identity for AIO secrets management
-        Write-Host "Create user-assigned identity for cloud connections" -ForegroundColor DarkGray
-        Write-Host "`n"
-        $userAssignedManagedIdentityCloudName = "aio-${clusterName}-${namingGuid}-cloud-identity"
-        $userAssignedMICloudResourceId = $(az identity create -g $resourceGroup -n $userAssignedManagedIdentityCloudName -o tsv --query id)
+            Write-Host "[$(Get-Date -Format t)] INFO: Deploying AIO to the $clusterName cluster" -ForegroundColor Gray
+            Write-Host "`n"
+            # Create user-assigned identity for AIO secrets management
+            Write-Host "Create user-assigned identity for AIO secrets management" -ForegroundColor DarkGray
+            Write-Host "`n"
+            $userAssignedManagedIdentityKvName = "aio-${clusterName}-${namingGuid}-kv-identity"
+            $userAssignedMIKvResourceId = $(az identity create -g $resourceGroup -n $userAssignedManagedIdentityKvName -o tsv --query id)
 
-        kubectx $clusterName
-        $arcClusterName = $AgConfig.SiteConfig[$clusterName].ArcClusterName + "-$namingGuid"
-        $keyVaultId = (az keyvault list -g $resourceGroup --resource-type vault --query "[$kvIndex].id" -o tsv)
-        $retryCount = 0
-        $maxRetries = 5
-        $aioStatus = "notDeployed"
+            # Create user-assigned identity for AIO secrets management
+            Write-Host "Create user-assigned identity for cloud connections" -ForegroundColor DarkGray
+            Write-Host "`n"
+            $userAssignedManagedIdentityCloudName = "aio-${clusterName}-${namingGuid}-cloud-identity"
+            $userAssignedMICloudResourceId = $(az identity create -g $resourceGroup -n $userAssignedManagedIdentityCloudName -o tsv --query id)
 
-        # Enable custom locations on the Arc-enabled cluster
-        Write-Host "[$(Get-Date -Format t)] INFO: Enabling custom locations on the Arc-enabled cluster" -ForegroundColor DarkGray
-        Write-Host "`n"
-        az config set extension.use_dynamic_install=yes_without_prompt
-        az connectedk8s enable-features --name $arcClusterName `
-            --resource-group $resourceGroup `
-            --features cluster-connect custom-locations `
-            --custom-locations-oid $customLocationRPOID `
-            --only-show-errors
+            kubectx $clusterName
+            $arcClusterName = $AgConfig.SiteConfig[$clusterName].ArcClusterName + "-$namingGuid"
+            $keyVaultId = (az keyvault list -g $resourceGroup --resource-type vault --query "[$kvIndex].id" -o tsv)
+            $retryCount = 0
+            $maxRetries = 5
+            $aioStatus = "notDeployed"
 
-        # Create the Schema registry for the cluster
-        Write-Host "[$(Get-Date -Format t)] INFO: Creating the schema registry on the Arc-enabled cluster" -ForegroundColor DarkGray
-        Write-Host "`n"
-        $schemaName = "${clusterName}-$($Env:namingGuid)-schema"
-        $schemaId = $(az iot ops schema registry create --name $schemaName `
-                --resource-group $Env:resourceGroup `
-                --registry-namespace "$clusterName-$($Env:namingGuid)-namespace" `
-                --sa-resource-id $(az storage account show --name $Env:aioStorageAccountName --resource-group $Env:resourceGroup -o tsv --query id) `
-                --query id -o tsv)
-
-        Write-Host "[$(Get-Date -Format t)] INFO: The aio storage account name is: $aioStorageAccountName" -ForegroundColor DarkGray
-        Write-Host "[$(Get-Date -Format t)] INFO: the schemaId is '$schemaId' - verify this" -ForegroundColor DarkGray
-
-        $customLocationName = $arcClusterName.toLower() + "-cl"
-
-        # Initialize the Azure IoT Operations instance on the Arc-enabled cluster
-        Write-Host "[$(Get-Date -Format t)] INFO: Initialize the Azure IoT Operations instance on the Arc-enabled cluster" -ForegroundColor DarkGray
-        Write-Host "`n"
-        do {
-            az iot ops init --cluster $arcClusterName.toLower() `
+            # Enable custom locations on the Arc-enabled cluster
+            Write-Host "[$(Get-Date -Format t)] INFO: Enabling custom locations on the Arc-enabled cluster" -ForegroundColor DarkGray
+            Write-Host "`n"
+            az config set extension.use_dynamic_install=yes_without_prompt
+            az connectedk8s enable-features --name $arcClusterName `
                 --resource-group $resourceGroup `
-                --subscription $subscriptionId `
+                --features cluster-connect custom-locations `
+                --custom-locations-oid $customLocationRPOID `
                 --only-show-errors
-            if ($? -eq $false) {
-                $aioStatus = "notDeployed"
-                Write-Host "`n"
-                Write-Host "[$(Get-Date -Format t)] Error: An error occured while deploying AIO on the cluster...Retrying" -ForegroundColor DarkRed
-                Write-Host "`n"
-                az iot ops init --cluster $arcClusterName.toLower() `
+
+            # Create the Schema registry for the cluster
+            Write-Host "[$(Get-Date -Format t)] INFO: Creating the schema registry on the Arc-enabled cluster" -ForegroundColor DarkGray
+            Write-Host "`n"
+            $schemaName = "${clusterName}-$($Env:namingGuid)-schema"
+            $schemaId = $(az iot ops schema registry create --name $schemaName `
                     --resource-group $Env:resourceGroup `
-                    --subscription $Env:subscriptionId `
-                    --only-show-errors
-                $retryCount++
-            }
-            else {
-                $aioStatus = "deployed"
-            }
-        } until ($aioStatus -eq "deployed" -or $retryCount -eq $maxRetries)
+                    --registry-namespace "$clusterName-$($Env:namingGuid)-namespace" `
+                    --sa-resource-id $(az storage account show --name $Env:aioStorageAccountName --resource-group $Env:resourceGroup -o tsv --query id) `
+                    --query id -o tsv)
 
-        $retryCount = 0
-        $maxRetries = 5
-        # Create the Azure IoT Operations instance on the Arc-enabled cluster
-        Write-Host "[$(Get-Date -Format t)] INFO: Create the Azure IoT Operations instance on the Arc-enabled cluster" -ForegroundColor DarkGray
-        Write-Host "`n"
-        do {
-            az iot ops create --name $arcClusterName.toLower() `
-                --cluster $arcClusterName.toLower() `
-                --resource-group $Env:resourceGroup `
-                --subscription $Env:subscriptionId `
-                --custom-location $customLocationName `
-                --sr-resource-id $schemaId `
-                --enable-rsync true `
-                --add-insecure-listener true `
-                --only-show-errors
+            Write-Host "[$(Get-Date -Format t)] INFO: The aio storage account name is: $aioStorageAccountName" -ForegroundColor DarkGray
+            Write-Host "[$(Get-Date -Format t)] INFO: the schemaId is '$schemaId' - verify this" -ForegroundColor DarkGray
 
-            if ($? -eq $false) {
-                $aioStatus = "notDeployed"
-                Write-Host "`n"
-                Write-Host "[$(Get-Date -Format t)] Error: An error occured while deploying AIO on the cluster...Retrying" -ForegroundColor DarkRed
-                Write-Host "`n"
-                az iot ops create --name $arcClusterName.toLower() `
-                    --cluster $arcClusterName.toLower() `
+            $customLocationName = $arcClusterName.toLower() + "-cl"
+
+            # Initialize the Azure IoT Operations instance on the Arc-enabled cluster
+            Write-Host "[$(Get-Date -Format t)] INFO: Initialize the Azure IoT Operations instance on the Arc-enabled cluster" -ForegroundColor DarkGray
+            Write-Host "`n"
+            do {
+                az iot ops init --cluster $arcClusterName.toLower() `
                     --resource-group $resourceGroup `
                     --subscription $subscriptionId `
+                    --only-show-errors
+                if ($? -eq $false) {
+                    $aioStatus = "notDeployed"
+                    Write-Host "`n"
+                    Write-Host "[$(Get-Date -Format t)] Error: An error occured while deploying AIO on the cluster...Retrying" -ForegroundColor DarkRed
+                    Write-Host "`n"
+                    az iot ops init --cluster $arcClusterName.toLower() `
+                        --resource-group $Env:resourceGroup `
+                        --subscription $Env:subscriptionId `
+                        --only-show-errors
+                    $retryCount++
+                }
+                else {
+                    $aioStatus = "deployed"
+                }
+            } until ($aioStatus -eq "deployed" -or $retryCount -eq $maxRetries)
+
+            $retryCount = 0
+            $maxRetries = 5
+            # Create the Azure IoT Operations instance on the Arc-enabled cluster
+            Write-Host "[$(Get-Date -Format t)] INFO: Create the Azure IoT Operations instance on the Arc-enabled cluster" -ForegroundColor DarkGray
+            Write-Host "`n"
+            do {
+                az iot ops create --name $arcClusterName.toLower() `
+                    --cluster $arcClusterName.toLower() `
+                    --resource-group $Env:resourceGroup `
+                    --subscription $Env:subscriptionId `
                     --custom-location $customLocationName `
                     --sr-resource-id $schemaId `
                     --enable-rsync true `
                     --add-insecure-listener true `
                     --only-show-errors
 
-                $retryCount++
+                if ($? -eq $false) {
+                    $aioStatus = "notDeployed"
+                    Write-Host "`n"
+                    Write-Host "[$(Get-Date -Format t)] Error: An error occured while deploying AIO on the cluster...Retrying" -ForegroundColor DarkRed
+                    Write-Host "`n"
+                    az iot ops create --name $arcClusterName.toLower() `
+                        --cluster $arcClusterName.toLower() `
+                        --resource-group $resourceGroup `
+                        --subscription $subscriptionId `
+                        --custom-location $customLocationName `
+                        --sr-resource-id $schemaId `
+                        --enable-rsync true `
+                        --add-insecure-listener true `
+                        --only-show-errors
+
+                    $retryCount++
+                }
+                else {
+                    $aioStatus = "deployed"
+                }
+            } until ($aioStatus -eq "deployed" -or $retryCount -eq $maxRetries)
+
+            # Configure the Azure IoT Operations instance for secret synchronization
+            Write-Host "[$(Get-Date -Format t)] INFO: Configuring the Azure IoT Operations instance for secret synchronization" -ForegroundColor DarkGray
+            Write-Host "`n"
+
+            # Enable OIDC issuer and workload identity on the Arc-enabled cluster
+            az connectedk8s update -n $arcClusterName `
+                --resource-group $resourceGroup `
+                --enable-oidc-issuer `
+                --enable-workload-identity
+
+            Write-Host "[$(Get-Date -Format t)] INFO: Assigning the user-assigned managed identity to the Azure IoT Operations instance" -ForegroundColor DarkGray
+            Write-Host "`n"
+            az iot ops identity assign --name $arcClusterName.toLower() `
+                --resource-group $resourceGroup `
+                --mi-user-assigned $userAssignedMIKvResourceId
+
+            Start-Sleep -Seconds 60
+
+            Write-Host "[$(Get-Date -Format t)] INFO: Configure the Azure IoT Operations instance for secret synchronization" -ForegroundColor DarkGray
+            Write-Host "`n"
+
+            az iot ops secretsync enable --instance $arcClusterName.toLower() `
+                --kv-resource-id $keyVaultId `
+                --resource-group $resourceGroup `
+                --mi-user-assigned $userAssignedMICloudResourceId `
+                --only-show-errors
+
+            $kvIndex++
+
+            # Get IoT Operations extension pricipalId
+            Write-Host "[$(Get-Date -Format t)] INFO: Retrieving IoT Operations extension principalId" -ForegroundColor DarkGray
+            $iotExtensionPrincipalId = (az k8s-extension list --resource-group $resourceGroup --cluster-name $arcClusterName --cluster-type connectedClusters --query "[?extensionType=='microsoft.iotoperations'].identity.principalId" -o tsv)
+            Write-Host "[$(Get-Date -Format t)] INFO: IoT Operations extension principalId is $iotExtensionPrincipalId" -ForegroundColor DarkGray
+
+            # Assign "Azure Event Hubs Data Sender" role to IoT managed identity
+            Write-Host "[$(Get-Date -Format t)] INFO: Assigning 'Azure Event Hubs Data Sender role' to '$iotExtensionPrincipalId' to EventHub namespace" -ForegroundColor DarkGray
+            az role assignment create --assignee-object-id $iotExtensionPrincipalId --role "Azure Event Hubs Data Sender" --scope $eventHubNamespaceId --assignee-principal-type ServicePrincipal --only-show-errors
+
+            # Deploy IoT DataFlows using bicep template
+            Write-Host "[$(Get-Date -Format t)] INFO: Deploying IoT DataFlows using bicep template" -ForegroundColor DarkGray
+            $deploymentName = "$arcClusterName" + "-iot-dataflow"
+            $iotInstanceName = $arcClusterName.toLower()
+
+            Write-Host "[$(Get-Date -Format t)] INFO:  az deployment group create --name $deploymentName  --resource-group $resourceGroup --template-file $dataflowBicepTemplatePath --parameters aioInstanceName=$iotInstanceName evenHubNamespaceHost=$evenHubNamespaceHost eventHubName=$eventHubName customLocationName=$customLocationName"
+            az deployment group create --name $deploymentName  --resource-group $resourceGroup --template-file $dataflowBicepTemplatePath `
+                --parameters aioInstanceName=$iotInstanceName evenHubNamespaceHost=$evenHubNamespaceHost eventHubName=$eventHubName `
+                customLocationName=$customLocationName
+
+            # Verify the deployment status
+            $deploymentStatus = az deployment group show --name $deploymentName --resource-group $resourceGroup --query properties.provisioningState -o tsv
+            if ($deploymentStatus -eq "Succeeded") {
+                Write-Host "[$(Get-Date -Format t)] INFO: Deployment succeeded for $deploymentName" -ForegroundColor Green
             }
             else {
-                $aioStatus = "deployed"
+                Write-Host "[$(Get-Date -Format t)] ERROR: Deployment failed for $deploymentName" -ForegroundColor Red
             }
-        } until ($aioStatus -eq "deployed" -or $retryCount -eq $maxRetries)
-
-        # Configure the Azure IoT Operations instance for secret synchronization
-        Write-Host "[$(Get-Date -Format t)] INFO: Configuring the Azure IoT Operations instance for secret synchronization" -ForegroundColor DarkGray
-        Write-Host "`n"
-
-        # Enable OIDC issuer and workload identity on the Arc-enabled cluster
-        az connectedk8s update -n $arcClusterName `
-            --resource-group $resourceGroup `
-            --enable-oidc-issuer `
-            --enable-workload-identity
-
-        Write-Host "[$(Get-Date -Format t)] INFO: Assigning the user-assigned managed identity to the Azure IoT Operations instance" -ForegroundColor DarkGray
-        Write-Host "`n"
-        az iot ops identity assign --name $arcClusterName.toLower() `
-            --resource-group $resourceGroup `
-            --mi-user-assigned $userAssignedMIKvResourceId
-
-        Start-Sleep -Seconds 60
-
-        Write-Host "[$(Get-Date -Format t)] INFO: Configure the Azure IoT Operations instance for secret synchronization" -ForegroundColor DarkGray
-        Write-Host "`n"
-
-        az iot ops secretsync enable --instance $arcClusterName.toLower() `
-            --kv-resource-id $keyVaultId `
-            --resource-group $resourceGroup `
-            --mi-user-assigned $userAssignedMICloudResourceId `
-            --only-show-errors
-
+        } -ArgumentList $clusterName, $AgConfig, $namingGuid, $resourceGroup, $templateBaseUrl, $dataflowBicepTemplatePath, $eventHubNamespace, $eventHubNamespaceId, $evenHubNamespaceHost, $eventHubName, $customLocationRPOID, $subscriptionId, $kvIndex
+        $jobs += $job
         $kvIndex++
-
-        # Get IoT Operations extension pricipalId
-        Write-Host "[$(Get-Date -Format t)] INFO: Retrieving IoT Operations extension principalId" -ForegroundColor DarkGray
-        $iotExtensionPrincipalId = (az k8s-extension list --resource-group $resourceGroup --cluster-name $arcClusterName --cluster-type connectedClusters --query "[?extensionType=='microsoft.iotoperations'].identity.principalId" -o tsv)
-        Write-Host "[$(Get-Date -Format t)] INFO: IoT Operations extension principalId is $iotExtensionPrincipalId" -ForegroundColor DarkGray
-
-        # Assign "Azure Event Hubs Data Sender" role to IoT managed identity
-        Write-Host "[$(Get-Date -Format t)] INFO: Assigning 'Azure Event Hubs Data Sender role' to '$iotExtensionPrincipalId' to EventHub namespace" -ForegroundColor DarkGray
-        az role assignment create --assignee-object-id $iotExtensionPrincipalId --role "Azure Event Hubs Data Sender" --scope $eventHubNamespaceId --assignee-principal-type ServicePrincipal --only-show-errors
-
-        # Deploy IoT DataFlows using bicep template
-        Write-Host "[$(Get-Date -Format t)] INFO: Deploying IoT DataFlows using bicep template" -ForegroundColor DarkGray
-        $deploymentName = "$arcClusterName" + "-iot-dataflow"
-        $iotInstanceName = $arcClusterName.toLower()
-
-        Write-Host "[$(Get-Date -Format t)] INFO:  az deployment group create --name $deploymentName  --resource-group $resourceGroup --template-file $dataflowBicepTemplatePath --parameters aioInstanceName=$iotInstanceName evenHubNamespaceHost=$evenHubNamespaceHost eventHubName=$eventHubName customLocationName=$customLocationName"
-        az deployment group create --name $deploymentName  --resource-group $resourceGroup --template-file $dataflowBicepTemplatePath `
-            --parameters aioInstanceName=$iotInstanceName evenHubNamespaceHost=$evenHubNamespaceHost eventHubName=$eventHubName `
-            customLocationName=$customLocationName
-
-        # Verify the deployment status
-        $deploymentStatus = az deployment group show --name $deploymentName --resource-group $resourceGroup --query properties.provisioningState -o tsv
-        if ($deploymentStatus -eq "Succeeded") {
-            Write-Host "[$(Get-Date -Format t)] INFO: Deployment succeeded for $deploymentName" -ForegroundColor Green
-        }
-        else {
-            Write-Host "[$(Get-Date -Format t)] ERROR: Deployment failed for $deploymentName" -ForegroundColor Red
-        }
     }
+    # Wait for all jobs to complete
+    Write-Host "Waiting for all AIO deployments to complete..." -ForegroundColor Gray
+    $jobs | ForEach-Object { Wait-Job $_ }
+    Write-Host "All AIO deployments completed." -ForegroundColor Green
 }
 
 function Set-MicrosoftFabric {
