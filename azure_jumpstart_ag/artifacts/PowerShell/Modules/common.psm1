@@ -842,8 +842,39 @@ function Deploy-Prometheus {
     $observabilityDashboards = $AgConfig.Monitoring["Dashboards"]
     $adminPassword = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:adminPassword))
 
-    # Set Prod Grafana API endpoint
-    $grafanaDS = $AgConfig.Monitoring["ProdURL"] + "/api/datasources"
+    # Set Prod Grafana API endpoint — wait until the Prod URL is responding before proceeding
+    $prodUrl = $AgConfig.Monitoring["ProdURL"]
+    $grafanaDS = $null
+    if ($prodUrl) {
+        $maxChecks = 30 # total attempts
+        $delaySeconds = 10
+        $attempt = 0
+        Write-Host "[$(Get-Date -Format t)] INFO: Waiting for Grafana Prod URL $prodUrl to become available (timeout $($maxChecks * $delaySeconds) seconds)..." -ForegroundColor Gray
+        while ($attempt -lt $maxChecks) {
+            try {
+                $resp = Invoke-WebRequest -Uri $prodUrl -UseBasicParsing -Method Head -TimeoutSec 10 -ErrorAction Stop
+                if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 400) {
+                    Write-Host "[$(Get-Date -Format t)] INFO: Grafana Prod URL is responding (HTTP $($resp.StatusCode))." -ForegroundColor Green
+                    $grafanaDS = ($prodUrl.TrimEnd('/') + "/api/datasources")
+                    break
+                }
+            }
+            catch {
+                # Not ready yet
+                Write-Host "[$(Get-Date -Format t)] INFO: Grafana Prod URL not ready yet (attempt $($attempt + 1)/$maxChecks)." -ForegroundColor DarkGray
+            }
+            $attempt++
+            Start-Sleep -Seconds $delaySeconds
+        }
+
+        if (-not $grafanaDS) {
+            Write-Warning "Grafana Prod URL $prodUrl did not become available after $($maxChecks * $delaySeconds) seconds. Falling back to configured value for downstream operations."
+            $grafanaDS = ($prodUrl.TrimEnd('/') + "/api/datasources")
+        }
+    }
+    else {
+        Write-Warning "ProdURL is not configured in AgConfig.Monitoring['ProdURL']" -ForegroundColor Yellow
+    }
 
     # Installing Grafana
     Write-Host "[$(Get-Date -Format t)] INFO: Installing and Configuring Observability components (Step 14/17)" -ForegroundColor DarkGreen
