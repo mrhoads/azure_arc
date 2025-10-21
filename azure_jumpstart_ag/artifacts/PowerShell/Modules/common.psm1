@@ -645,7 +645,7 @@ function Deploy-AzArcK8sAKSEE {
 
             # Connect servers to Arc
             if($scenario -eq "contoso_hypermarket"){
-                Connect-AzAccount -Identity -Tenant $using:tenantId-Subscription $subscriptionId
+                Connect-AzAccount -Identity -Tenant $using:tenantId -Subscription $subscriptionId
             }else{
                 $azurePassword = ConvertTo-SecureString $using:secret -AsPlainText -Force
                 $psCred = New-Object System.Management.Automation.PSCredential($using:clientId, $azurePassword)
@@ -848,7 +848,39 @@ function Deploy-Prometheus {
     # Installing Grafana
     Write-Host "[$(Get-Date -Format t)] INFO: Installing and Configuring Observability components (Step 14/17)" -ForegroundColor DarkGreen
     Write-Host "[$(Get-Date -Format t)] INFO: Installing Grafana." -ForegroundColor Gray
-    $latestRelease = (Invoke-WebRequest -Uri $websiteUrls["grafana"] | ConvertFrom-Json).tag_name.replace('v', '')
+    # Determine Grafana release to install. Preferred order:
+    # 1) $Env:GRAFANA_VERSION (explicit environment variable)
+    # 2) $AgConfig.Monitoring["GrafanaVersion"] (site config override)
+    # 3) Latest Grafana 11.x release from GitHub
+    # 4) Fallback to releases/latest
+    $desiredGrafanaVersion = $Env:GRAFANA_VERSION
+    if (-not $desiredGrafanaVersion -and $AgConfig.Monitoring.ContainsKey('GrafanaVersion')) {
+        $desiredGrafanaVersion = $AgConfig.Monitoring['GrafanaVersion']
+    }
+
+    if ($desiredGrafanaVersion) {
+        # Allow either '11.5.2' or 'v11.5.2' style
+        $latestRelease = $desiredGrafanaVersion -replace '^v', ''
+    }
+    else {
+        try {
+            # Query releases and prefer the newest 11.x release
+            $ghHeaders = @{ 'User-Agent' = 'AzureJumpstartScript' }
+            $releases = Invoke-WebRequest -Uri 'https://api.github.com/repos/grafana/grafana/releases' -Headers $ghHeaders | ConvertFrom-Json
+            $release11 = $releases | Where-Object { $_.tag_name -match '^v11\.' } | Select-Object -First 1
+            if ($release11) {
+                $latestRelease = $release11.tag_name.replace('v', '')
+            }
+            else {
+                # Fallback to the latest release endpoint
+                $latestRelease = (Invoke-WebRequest -Uri $websiteUrls['grafana'] -Headers $ghHeaders | ConvertFrom-Json).tag_name.replace('v', '')
+            }
+        }
+        catch {
+            # If GitHub API is unreachable, fallback to the existing behavior
+            $latestRelease = (Invoke-WebRequest -Uri $websiteUrls['grafana'] | ConvertFrom-Json).tag_name.replace('v', '')
+        }
+    }
     Start-Process msiexec.exe -Wait -ArgumentList "/I $AgToolsDir\grafana-$latestRelease.windows-amd64.msi /quiet" | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
 
     # Update Prometheus Helm charts

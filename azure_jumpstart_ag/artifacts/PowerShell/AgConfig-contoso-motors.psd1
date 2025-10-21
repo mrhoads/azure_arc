@@ -185,6 +185,8 @@
         User       = "Contoso Operator"
         Email      = "operator@contoso.com"
         Namespace  = "observability"
+    # Temporarily pinned Grafana version
+    GrafanaVersion = '11.6.6'
         ProdURL    = "http://localhost:3000"
         Dashboards = @{
             "grafana.com" = @() # Dashboards from https://grafana.com/grafana/dashboards

@@ -277,9 +277,33 @@ foreach ($module in $modules) {
 }
 
 ##############################################################
-# Get latest Grafana OSS release
+# Determine Grafana release to download (prefer explicit 11.x pin)
+# Order: Env GRAFANA_VERSION -> AgConfig.Monitoring['GrafanaVersion'] -> latest v11.* release -> fallback latest
 ##############################################################
-$latestRelease = (Invoke-RestMethod -Uri $websiteUrls["grafana"]).tag_name.replace('v', '')
+$desiredGrafanaVersion = $Env:GRAFANA_VERSION
+if (-not $desiredGrafanaVersion -and $AgConfig.Monitoring.ContainsKey('GrafanaVersion')) {
+  $desiredGrafanaVersion = $AgConfig.Monitoring['GrafanaVersion']
+}
+
+if ($desiredGrafanaVersion) {
+  $latestRelease = $desiredGrafanaVersion -replace '^v', ''
+}
+else {
+  try {
+    $ghHeaders = @{ 'User-Agent' = 'AzureJumpstartScript' }
+    $releases = Invoke-WebRequest -Uri 'https://api.github.com/repos/grafana/grafana/releases' -Headers $ghHeaders | ConvertFrom-Json
+    $release11 = $releases | Where-Object { $_.tag_name -match '^v11\.' } | Select-Object -First 1
+    if ($release11) {
+      $latestRelease = $release11.tag_name.replace('v', '')
+    }
+    else {
+      $latestRelease = (Invoke-RestMethod -Uri $websiteUrls['grafana']).tag_name.replace('v', '')
+    }
+  }
+  catch {
+    $latestRelease = (Invoke-RestMethod -Uri $websiteUrls['grafana']).tag_name.replace('v', '')
+  }
+}
 
 ##############################################################
 # Download artifacts
