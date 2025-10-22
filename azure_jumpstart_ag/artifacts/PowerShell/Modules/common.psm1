@@ -1018,22 +1018,87 @@ function Deploy-Prometheus {
         password = $adminPassword
     } | ConvertTo-Json
 
-    # Make HTTP request to the API to create user
-    $retryCount = 10
-    $retryDelay = 30
-    do {
+    # Make HTTP request to the API to create user with robust retry and error handling
+    $maxAttempts = 10
+    $attempt = 0
+    $baseDelay = 15
+
+    while ($attempt -lt $maxAttempts) {
+        $attempt++
         try {
-            Invoke-RestMethod -Method Post -Uri "$($AgConfig.Monitoring["ProdURL"])/api/admin/users" -Headers $adminHeaders -Body $grafanaUserBody | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
-            $retryCount = 0
+            # Ensure body is JSON string and content type header is present
+            $contentTypeHeader = @{ "Content-Type" = "application/json" } + $adminHeaders
+            Invoke-RestMethod -Method Post -Uri "$($AgConfig.Monitoring["ProdURL"])/api/admin/users" -Headers $contentTypeHeader -Body $grafanaUserBody -ErrorAction Stop | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
+            Write-Host "[$(Get-Date -Format t)] INFO: Grafana prod user created successfully (attempt $attempt)." -ForegroundColor Green
+            break
         }
         catch {
-            $retryCount--
-            if ($retryCount -gt 0) {
-                Write-Host "[$(Get-Date -Format t)] INFO: Retrying in $retryDelay seconds..." -ForegroundColor Gray
-                Start-Sleep -Seconds $retryDelay
+            # Inspect HTTP response if available
+            $isAuthFailed = $false
+            $statusCode = $null
+            $responseBody = $null
+            try {
+                if ($_.Exception.Response -ne $null) {
+                    $resp = $_.Exception.Response
+                    $statusCode = $resp.StatusCode.Value__
+                    $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+                    $responseBody = $sr.ReadToEnd()
+                    if ($responseBody -match 'password-auth.failed') { $isAuthFailed = $true }
+                }
+            } catch {
+                # ignore errors reading the response
+            }
+
+            Write-Host "[$(Get-Date -Format t)] WARN: Failed to create Grafana user on attempt $attempt/$maxAttempts. Status=$statusCode Message=$($_.Exception.Message)" -ForegroundColor Yellow
+            if ($responseBody) {
+                Write-Host "[$(Get-Date -Format t)] DEBUG: Response body: $responseBody" -ForegroundColor DarkGray
+            }
+
+            # Specific handling for Grafana password auth failure: try resetting admin password and retry
+            if ($isAuthFailed -and $Env:Path -match 'GrafanaLabs' -or (Test-Path 'C:\Program Files\GrafanaLabs\grafana\bin\grafana-cli.exe')) {
+                Write-Host "[$(Get-Date -Format t)] INFO: Detected Grafana password-auth.failed (401). Attempting to reset Grafana admin password and retry." -ForegroundColor Gray
+                try {
+                    # Ensure grafana-cli is available on PATH
+                    $grafanaCli = 'grafana-cli'
+                    if (-not (Get-Command $grafanaCli -ErrorAction SilentlyContinue)) {
+                        $cliPath = 'C:\Program Files\GrafanaLabs\grafana\bin\grafana-cli.exe'
+                        if (Test-Path $cliPath) { $grafanaCli = $cliPath }
+                    }
+
+                    & $grafanaCli --homepath 'C:\Program Files\GrafanaLabs\grafana' admin reset-admin-password $adminPassword 2>&1 | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
+                    Write-Host "[$(Get-Date -Format t)] INFO: grafana-cli reset-admin-password executed." -ForegroundColor Gray
+                }
+                catch {
+                    Write-Host "[$(Get-Date -Format t)] WARN: grafana-cli reset failed: $($_.Exception.Message)" -ForegroundColor Yellow
+                }
+
+                # small pause to allow Grafana to re-load auth state
+                Start-Sleep -Seconds 10
+                # regenerate authorization header (in case adminPassword was updated)
+                $adminCredentials = $AgConfig.Monitoring["AdminUser"] + ':' + $adminPassword
+                $adminEncodedcredentials = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($adminCredentials))
+                $adminHeaders = @{ "Authorization" = ("Basic " + $adminEncodedcredentials); "Content-Type" = "application/json" }
+
+                # continue to next attempt
+            }
+
+            if ($attempt -lt $maxAttempts) {
+                # Exponential backoff with jitter
+                $delay = [int]([math]::Min(300, $baseDelay * [math]::Pow(2, $attempt - 1)))
+                $jitter = Get-Random -Minimum 0 -Maximum 5
+                $totalDelay = $delay + $jitter
+                Write-Host "[$(Get-Date -Format t)] INFO: Retrying in $totalDelay seconds..." -ForegroundColor Gray
+                Start-Sleep -Seconds $totalDelay
+                continue
+            }
+            else {
+                Write-Host "[$(Get-Date -Format t)] ERROR: Exhausted attempts ($maxAttempts) creating Grafana user. Last status=$statusCode" -ForegroundColor White -BackgroundColor Red
+                # Log full error to Observability log
+                $_ | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
+                break
             }
         }
-    } while ($retryCount -gt 0)
+    }
 
     # Deploying Kube Prometheus Stack for stores
     $AgConfig.SiteConfig.GetEnumerator() | ForEach-Object {
