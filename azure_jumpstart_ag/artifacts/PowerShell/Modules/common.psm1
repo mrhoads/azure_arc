@@ -645,7 +645,7 @@ function Deploy-AzArcK8sAKSEE {
 
             # Connect servers to Arc
             if($scenario -eq "contoso_hypermarket"){
-                Connect-AzAccount -Identity -Tenant $using:tenantId -Subscription $subscriptionId
+                Connect-AzAccount -Identity -Tenant $using:tenantId-Subscription $subscriptionId
             }else{
                 $azurePassword = ConvertTo-SecureString $using:secret -AsPlainText -Force
                 $psCred = New-Object System.Management.Automation.PSCredential($using:clientId, $azurePassword)
@@ -842,76 +842,13 @@ function Deploy-Prometheus {
     $observabilityDashboards = $AgConfig.Monitoring["Dashboards"]
     $adminPassword = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($env:adminPassword))
 
-    # Set Prod Grafana API endpoint — wait until the Prod URL is responding before proceeding
-    $prodUrl = $AgConfig.Monitoring["ProdURL"]
-    $grafanaDS = $null
-    if ($prodUrl) {
-        $maxChecks = 30 # total attempts
-        $delaySeconds = 10
-        $attempt = 0
-        Write-Host "[$(Get-Date -Format t)] INFO: Waiting for Grafana Prod URL $prodUrl to become available (timeout $($maxChecks * $delaySeconds) seconds)..." -ForegroundColor Gray
-        while ($attempt -lt $maxChecks) {
-            try {
-                $resp = Invoke-WebRequest -Uri $prodUrl -UseBasicParsing -Method Head -TimeoutSec 10 -ErrorAction Stop
-                if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 400) {
-                    Write-Host "[$(Get-Date -Format t)] INFO: Grafana Prod URL is responding (HTTP $($resp.StatusCode))." -ForegroundColor Green
-                    $grafanaDS = ($prodUrl.TrimEnd('/') + "/api/datasources")
-                    break
-                }
-            }
-            catch {
-                # Not ready yet
-                Write-Host "[$(Get-Date -Format t)] INFO: Grafana Prod URL not ready yet (attempt $($attempt + 1)/$maxChecks)." -ForegroundColor DarkGray
-            }
-            $attempt++
-            Start-Sleep -Seconds $delaySeconds
-        }
-
-        if (-not $grafanaDS) {
-            Write-Warning "Grafana Prod URL $prodUrl did not become available after $($maxChecks * $delaySeconds) seconds. Falling back to configured value for downstream operations."
-            $grafanaDS = ($prodUrl.TrimEnd('/') + "/api/datasources")
-        }
-    }
-    else {
-        Write-Warning "ProdURL is not configured in AgConfig.Monitoring['ProdURL']" -ForegroundColor Yellow
-    }
+    # Set Prod Grafana API endpoint
+    $grafanaDS = $AgConfig.Monitoring["ProdURL"] + "/api/datasources"
 
     # Installing Grafana
     Write-Host "[$(Get-Date -Format t)] INFO: Installing and Configuring Observability components (Step 14/17)" -ForegroundColor DarkGreen
     Write-Host "[$(Get-Date -Format t)] INFO: Installing Grafana." -ForegroundColor Gray
-    # Determine Grafana release to install. Preferred order:
-    # 1) $Env:GRAFANA_VERSION (explicit environment variable)
-    # 2) $AgConfig.Monitoring["GrafanaVersion"] (site config override)
-    # 3) Latest Grafana 11.x release from GitHub
-    # 4) Fallback to releases/latest
-    $desiredGrafanaVersion = $Env:GRAFANA_VERSION
-    if (-not $desiredGrafanaVersion -and $AgConfig.Monitoring.ContainsKey('GrafanaVersion')) {
-        $desiredGrafanaVersion = $AgConfig.Monitoring['GrafanaVersion']
-    }
-
-    if ($desiredGrafanaVersion) {
-        # Allow either '11.5.2' or 'v11.5.2' style
-        $latestRelease = $desiredGrafanaVersion -replace '^v', ''
-    }
-    else {
-        try {
-            # Query releases and prefer the newest 11.x release
-            $ghHeaders = @{ 'User-Agent' = 'AzureJumpstartScript' }
-            $releases = Invoke-WebRequest -Uri 'https://api.github.com/repos/grafana/grafana/releases' -Headers $ghHeaders | ConvertFrom-Json
-            $release11 = $releases | Where-Object { $_.tag_name -match '^v11\.' } | Select-Object -First 1
-            if ($release11) {
-                $latestRelease = $release11.tag_name.replace('v', '')
-            }
-            else {
-                # Fallback to the latest release endpoint
-                $latestRelease = (Invoke-WebRequest -Uri $websiteUrls['grafana'] -Headers $ghHeaders | ConvertFrom-Json).tag_name.replace('v', '')
-            }
-        }
-        catch {
-            # If GitHub API is unreachable, fallback to the existing behavior
-            $latestRelease = (Invoke-WebRequest -Uri $websiteUrls['grafana'] | ConvertFrom-Json).tag_name.replace('v', '')
-        }
-    }
+    $latestRelease = (Invoke-WebRequest -Uri $websiteUrls["grafana"] | ConvertFrom-Json).tag_name.replace('v', '')
     Start-Process msiexec.exe -Wait -ArgumentList "/I $AgToolsDir\grafana-$latestRelease.windows-amd64.msi /quiet" | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
 
     # Update Prometheus Helm charts
@@ -1018,87 +955,22 @@ function Deploy-Prometheus {
         password = $adminPassword
     } | ConvertTo-Json
 
-    # Make HTTP request to the API to create user with robust retry and error handling
-    $maxAttempts = 10
-    $attempt = 0
-    $baseDelay = 15
-
-    while ($attempt -lt $maxAttempts) {
-        $attempt++
+    # Make HTTP request to the API to create user
+    $retryCount = 10
+    $retryDelay = 30
+    do {
         try {
-            # Ensure body is JSON string and content type header is present
-            $contentTypeHeader = @{ "Content-Type" = "application/json" } + $adminHeaders
-            Invoke-RestMethod -Method Post -Uri "$($AgConfig.Monitoring["ProdURL"])/api/admin/users" -Headers $contentTypeHeader -Body $grafanaUserBody -ErrorAction Stop | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
-            Write-Host "[$(Get-Date -Format t)] INFO: Grafana prod user created successfully (attempt $attempt)." -ForegroundColor Green
-            break
+            Invoke-RestMethod -Method Post -Uri "$($AgConfig.Monitoring["ProdURL"])/api/admin/users" -Headers $adminHeaders -Body $grafanaUserBody | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
+            $retryCount = 0
         }
         catch {
-            # Inspect HTTP response if available
-            $isAuthFailed = $false
-            $statusCode = $null
-            $responseBody = $null
-            try {
-                if ($_.Exception.Response -ne $null) {
-                    $resp = $_.Exception.Response
-                    $statusCode = $resp.StatusCode.Value__
-                    $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
-                    $responseBody = $sr.ReadToEnd()
-                    if ($responseBody -match 'password-auth.failed') { $isAuthFailed = $true }
-                }
-            } catch {
-                # ignore errors reading the response
-            }
-
-            Write-Host "[$(Get-Date -Format t)] WARN: Failed to create Grafana user on attempt $attempt/$maxAttempts. Status=$statusCode Message=$($_.Exception.Message)" -ForegroundColor Yellow
-            if ($responseBody) {
-                Write-Host "[$(Get-Date -Format t)] DEBUG: Response body: $responseBody" -ForegroundColor DarkGray
-            }
-
-            # Specific handling for Grafana password auth failure: try resetting admin password and retry
-            if ($isAuthFailed -and $Env:Path -match 'GrafanaLabs' -or (Test-Path 'C:\Program Files\GrafanaLabs\grafana\bin\grafana-cli.exe')) {
-                Write-Host "[$(Get-Date -Format t)] INFO: Detected Grafana password-auth.failed (401). Attempting to reset Grafana admin password and retry." -ForegroundColor Gray
-                try {
-                    # Ensure grafana-cli is available on PATH
-                    $grafanaCli = 'grafana-cli'
-                    if (-not (Get-Command $grafanaCli -ErrorAction SilentlyContinue)) {
-                        $cliPath = 'C:\Program Files\GrafanaLabs\grafana\bin\grafana-cli.exe'
-                        if (Test-Path $cliPath) { $grafanaCli = $cliPath }
-                    }
-
-                    & $grafanaCli --homepath 'C:\Program Files\GrafanaLabs\grafana' admin reset-admin-password $adminPassword 2>&1 | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
-                    Write-Host "[$(Get-Date -Format t)] INFO: grafana-cli reset-admin-password executed." -ForegroundColor Gray
-                }
-                catch {
-                    Write-Host "[$(Get-Date -Format t)] WARN: grafana-cli reset failed: $($_.Exception.Message)" -ForegroundColor Yellow
-                }
-
-                # small pause to allow Grafana to re-load auth state
-                Start-Sleep -Seconds 10
-                # regenerate authorization header (in case adminPassword was updated)
-                $adminCredentials = $AgConfig.Monitoring["AdminUser"] + ':' + $adminPassword
-                $adminEncodedcredentials = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($adminCredentials))
-                $adminHeaders = @{ "Authorization" = ("Basic " + $adminEncodedcredentials); "Content-Type" = "application/json" }
-
-                # continue to next attempt
-            }
-
-            if ($attempt -lt $maxAttempts) {
-                # Exponential backoff with jitter
-                $delay = [int]([math]::Min(300, $baseDelay * [math]::Pow(2, $attempt - 1)))
-                $jitter = Get-Random -Minimum 0 -Maximum 5
-                $totalDelay = $delay + $jitter
-                Write-Host "[$(Get-Date -Format t)] INFO: Retrying in $totalDelay seconds..." -ForegroundColor Gray
-                Start-Sleep -Seconds $totalDelay
-                continue
-            }
-            else {
-                Write-Host "[$(Get-Date -Format t)] ERROR: Exhausted attempts ($maxAttempts) creating Grafana user. Last status=$statusCode" -ForegroundColor White -BackgroundColor Red
-                # Log full error to Observability log
-                $_ | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
-                break
+            $retryCount--
+            if ($retryCount -gt 0) {
+                Write-Host "[$(Get-Date -Format t)] INFO: Retrying in $retryDelay seconds..." -ForegroundColor Gray
+                Start-Sleep -Seconds $retryDelay
             }
         }
-    }
+    } while ($retryCount -gt 0)
 
     # Deploying Kube Prometheus Stack for stores
     $AgConfig.SiteConfig.GetEnumerator() | ForEach-Object {
