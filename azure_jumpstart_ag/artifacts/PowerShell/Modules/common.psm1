@@ -851,50 +851,97 @@ function Deploy-Prometheus {
     $latestRelease = (Invoke-WebRequest -Uri $websiteUrls["grafana"] | ConvertFrom-Json).tag_name.replace('v', '')
     Start-Process msiexec.exe -Wait -ArgumentList "/I $AgToolsDir\grafana-$latestRelease.windows-amd64.msi /quiet" | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
 
+    # Wait for Grafana installation to create expected folders (avoid Copy-Item race)
+    $grafanaInstallPath = "C:\Program Files\GrafanaLabs\grafana"
+    $grafanaImgDir = Join-Path $grafanaInstallPath "public\img"
+    $maxWaitSeconds = 120
+    $waited = 0
+    while (-not (Test-Path $grafanaImgDir) -and $waited -lt $maxWaitSeconds) {
+        Write-Host "[$(Get-Date -Format t)] INFO: Waiting for Grafana to install and create $grafanaImgDir (waited ${waited}s)..." -ForegroundColor Gray
+        Start-Sleep -Seconds 5
+        $waited += 5
+    }
+    if (-not (Test-Path $grafanaImgDir)) {
+        Write-Host "[$(Get-Date -Format t)] WARNING: Grafana image directory $grafanaImgDir not found after waiting. Creating it to avoid Copy-Item failures." -ForegroundColor Yellow
+        try {
+            New-Item -Path $grafanaImgDir -ItemType Directory -Force | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
+        }
+        catch {
+            Write-Host "[$(Get-Date -Format t)] ERROR: Failed to create $grafanaImgDir. Copy operations may fail: $($_.Exception.Message)" -ForegroundColor White -BackgroundColor Red
+        }
+    }
+
     # Update Prometheus Helm charts
     helm repo add prometheus-community $websiteUrls["prometheus"] | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
     helm repo update | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log")
 
     if ($Env:scenario -eq "contoso_supermarket") {
-        # Update Grafana Icons
-        Copy-Item -Path $AgIconsDir\contoso.png -Destination "C:\Program Files\GrafanaLabs\grafana\public\img"
-        Copy-Item -Path $AgIconsDir\contoso.svg -Destination "C:\Program Files\GrafanaLabs\grafana\public\img\grafana_icon.svg"
+        try {
+            # Ensure destination exists
+            $destImg = "C:\Program Files\GrafanaLabs\grafana\public\img"
+            if (-not (Test-Path $destImg)) { New-Item -Path $destImg -ItemType Directory -Force | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log") }
 
-        Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
-        (Get-Content $_.FullName) -replace 'className:u,src:"public/img/grafana_icon.svg"', 'className:u,src:"public/img/contoso.png"' | Set-Content $_.FullName
+            # Update Grafana Icons
+            Copy-Item -Path (Join-Path $AgIconsDir 'contoso.png') -Destination $destImg -Force -ErrorAction Stop
+            Copy-Item -Path (Join-Path $AgIconsDir 'contoso.svg') -Destination (Join-Path $destImg 'grafana_icon.svg') -Force -ErrorAction Stop
+
+            Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
+                (Get-Content $_.FullName) -replace 'className:u,src:"public/img/grafana_icon.svg"', 'className:u,src:"public/img/contoso.png"' | Set-Content $_.FullName
+            }
+
+            # Reset Grafana UI
+            Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
+                (Get-Content $_.FullName) -replace 'Welcome to Grafana', 'Welcome to Grafana for Contoso Supermarket Production' | Set-Content $_.FullName
+            }
         }
-
-        # Reset Grafana UI
-        Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
-        (Get-Content $_.FullName) -replace 'Welcome to Grafana', 'Welcome to Grafana for Contoso Supermarket Production' | Set-Content $_.FullName
+        catch {
+            Write-Host "[$(Get-Date -Format t)] ERROR: Failed to update Grafana branding for contoso_supermarket: $($_.Exception.Message)" -ForegroundColor White -BackgroundColor Red
         }
     }
     elseif ($Env:scenario -eq "contoso_motors") {
-        # Update Grafana Icons
-        Copy-Item -Path $AgIconsDir\contoso-motors.png -Destination "C:\Program Files\GrafanaLabs\grafana\public\img"
-        Copy-Item -Path $AgIconsDir\contoso-motors.svg -Destination "C:\Program Files\GrafanaLabs\grafana\public\img\grafana_icon.svg"
+        try {
+            # Ensure destination exists
+            $destImg = "C:\Program Files\GrafanaLabs\grafana\public\img"
+            if (-not (Test-Path $destImg)) { New-Item -Path $destImg -ItemType Directory -Force | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log") }
 
-        Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
-        (Get-Content $_.FullName) -replace 'className:u,src:"public/img/grafana_icon.svg"', 'className:u,src:"public/img/contoso-motors.png"' | Set-Content $_.FullName
+            # Update Grafana Icons
+            Copy-Item -Path (Join-Path $AgIconsDir 'contoso-motors.png') -Destination $destImg -Force -ErrorAction Stop
+            Copy-Item -Path (Join-Path $AgIconsDir 'contoso-motors.svg') -Destination (Join-Path $destImg 'grafana_icon.svg') -Force -ErrorAction Stop
+
+            Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
+                (Get-Content $_.FullName) -replace 'className:u,src:"public/img/grafana_icon.svg"', 'className:u,src:"public/img/contoso-motors.png"' | Set-Content $_.FullName
+            }
+
+            # Reset Grafana UI
+            Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
+                (Get-Content $_.FullName) -replace 'Welcome to Grafana', 'Welcome to Grafana for Contoso Motors' | Set-Content $_.FullName
+            }
         }
-
-        # Reset Grafana UI
-        Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
-        (Get-Content $_.FullName) -replace 'Welcome to Grafana', 'Welcome to Grafana for Contoso Motors' | Set-Content $_.FullName
+        catch {
+            Write-Host "[$(Get-Date -Format t)] ERROR: Failed to update Grafana branding for contoso_motors: $($_.Exception.Message)" -ForegroundColor White -BackgroundColor Red
         }
     }
     elseif ($Env:scenario -eq "contoso_hypermarket") {
-        # Update Grafana Icons
-        Copy-Item -Path $AgIconsDir\contoso-hypermarket.png -Destination "C:\Program Files\GrafanaLabs\grafana\public\img"
-        Copy-Item -Path $AgIconsDir\contoso-hypermarket.svg -Destination "C:\Program Files\GrafanaLabs\grafana\public\img\grafana_icon.svg"
+        try {
+            # Ensure destination exists
+            $destImg = "C:\Program Files\GrafanaLabs\grafana\public\img"
+            if (-not (Test-Path $destImg)) { New-Item -Path $destImg -ItemType Directory -Force | Out-File -Append -FilePath ($AgConfig.AgDirectories["AgLogsDir"] + "\Observability.log") }
 
-        Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
-        (Get-Content $_.FullName) -replace 'className:u,src:"public/img/grafana_icon.svg"', 'className:u,src:"public/img/contoso-hypermarket.png"' | Set-Content $_.FullName
+            # Update Grafana Icons
+            Copy-Item -Path (Join-Path $AgIconsDir 'contoso-hypermarket.png') -Destination $destImg -Force -ErrorAction Stop
+            Copy-Item -Path (Join-Path $AgIconsDir 'contoso-hypermarket.svg') -Destination (Join-Path $destImg 'grafana_icon.svg') -Force -ErrorAction Stop
+
+            Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
+                (Get-Content $_.FullName) -replace 'className:u,src:"public/img/grafana_icon.svg"', 'className:u,src:"public/img/contoso-hypermarket.png"' | Set-Content $_.FullName
+            }
+
+            # Reset Grafana UI
+            Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
+                (Get-Content $_.FullName) -replace 'Welcome to Grafana', 'Welcome to Grafana for Contoso Hypermarket' | Set-Content $_.FullName
+            }
         }
-
-        # Reset Grafana UI
-        Get-ChildItem -Path 'C:\Program Files\GrafanaLabs\grafana\public\build\*.js' -Recurse -File | ForEach-Object {
-        (Get-Content $_.FullName) -replace 'Welcome to Grafana', 'Welcome to Grafana for Contoso Hypermarket' | Set-Content $_.FullName
+        catch {
+            Write-Host "[$(Get-Date -Format t)] ERROR: Failed to update Grafana branding for contoso_hypermarket: $($_.Exception.Message)" -ForegroundColor White -BackgroundColor Red
         }
     }
 
